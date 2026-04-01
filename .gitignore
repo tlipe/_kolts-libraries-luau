@@ -1,0 +1,33 @@
+```
+# Lua build artifacts
+*.lua~
+
+# Backup files
+*~
+*.bak
+*.backup
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+
+# Log files
+*.log
+
+# Environment files
+.env
+.env.local
+*.env.*
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+```
