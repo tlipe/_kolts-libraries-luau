@@ -95,7 +95,6 @@ local function create<T>(executor: (Resolve<T>, Reject) -> ()) : Promise<T>
 
 				local r = result :: any
 
-				-- FIX: checagem segura
 				if typeof(r) == "table" and r._isPromise then
 					(r :: Promise<U>):Then(nextResolve):Catch(nextReject)
 					return
