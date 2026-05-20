@@ -32,7 +32,7 @@ local function trace(err)
 	return debug.traceback(tostring(err), 2)
 end
 
-local function exec(fn, ...) : (boolean, any)
+local function exec(fn, ...): (boolean, any)
 	return xpcall(fn, trace, ...)
 end
 
@@ -57,7 +57,6 @@ local function create<T>(executor: (Resolve<T>, Reject) -> ()) : Promise<T>
 		if state ~= Pending then return end
 		state = Fulfilled
 		value = v
-
 		runQueue(thenQueue, v)
 	end
 
@@ -70,7 +69,7 @@ local function create<T>(executor: (Resolve<T>, Reject) -> ()) : Promise<T>
 		if #catchQueue == 0 then
 			async(function()
 				if not handled then
-					warn(`[Unhandled Promise Rejection]\n{trace(e)}`)
+					warn('[Unhandled Promise Rejection]\n' .. trace(e))
 				end
 			end)
 		end
@@ -95,7 +94,9 @@ local function create<T>(executor: (Resolve<T>, Reject) -> ()) : Promise<T>
 				end
 
 				local r = result :: any
-				if r and r._isPromise then
+
+				-- FIX: checagem segura
+				if typeof(r) == "table" and r._isPromise then
 					(r :: Promise<U>):Then(nextResolve):Catch(nextReject)
 					return
 				end
@@ -169,7 +170,6 @@ function Promise.all<T>(list: {Promise<T>}) : Promise<{T}>
 				:Catch(function(err)
 					if settled then return end
 					settled = true
-
 					reject(err)
 				end)
 		end
