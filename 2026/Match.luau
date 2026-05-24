@@ -6,9 +6,26 @@
 local Match = {}
 Match.__index = Match
 
+--// TYPES \\--
+
 export type PredicateCase<T, R> = {
 	predicate: (value: T) -> boolean,
 	handler: (...any) -> R,
+	priority: number
+}
+
+export type Pattern =
+	| {kind: "literal", value: any}
+| {kind: "type", value: string}
+| {kind: "shape", value: {[any]: Pattern}}
+| {kind: "array", value: {Pattern}}
+| {kind: "bind", name: string, pattern: Pattern}
+| {kind: "or", patterns: {Pattern}}
+| {kind: "and", patterns: {Pattern}}
+
+export type PatternCase<R> = {
+	pattern: Pattern,
+	handler: (bindings: {[string]: any}, ...any) -> R,
 	priority: number
 }
 
@@ -22,6 +39,7 @@ export type Match<T, K, R> = {
 	_value: T,
 	_cases: {[K]: (...any) -> R},
 	_predicates: {PredicateCase<T, R>},
+	_patterns: {PatternCase<R>}?,
 	_default: ((...any) -> R)?,
 
 	_cache: {[string]: R}?,
@@ -31,7 +49,7 @@ export type Match<T, K, R> = {
 	_config: MatchConfig,
 	_compiled: boolean,
 
-	case: (self: Match<T, K, R>, key: K | ((value: any) -> boolean), fn: (...any) -> R, priority: number?) -> Match<T, K, R>,
+	case: (self: Match<T, K, R>, key: K | ((value: any) -> boolean) | Pattern, fn: (...any) -> R, priority: number?) -> Match<T, K, R>,
 	default: (self: Match<T, K, R>, fn: (...any) -> R) -> Match<T, K, R>,
 	run: (self: Match<T, K, R>) -> ((...any) -> R)?,
 	execute: (self: Match<T, K, R>, ...any) -> R?,
@@ -46,24 +64,81 @@ export type MatchModule = {
 	simple: <T>(value: T) -> Match<T, any, any>,
 } & (<T>(value: T, useCache: boolean?) -> Match<T, any, any>)
 
+--// INTERNAL \\--
+
 local function getCacheKey(value: any, ...: any) : string
 	local key = tostring(value)
 	local n = select("#", ...)
 
-	if n == 0 then
-		return key
-	end
-
 	for i = 1, n do
-		local arg = select(i, ...)
-		key = `{key}:{tostring(arg)}`
+		key = `{key}:{tostring(select(i, ...))}`
 	end
 
 	return key
 end
 
+local function matchPattern(pattern: Pattern, value: any, bindings: {[string]: any}): boolean
+	local kind = pattern.kind
+
+	if kind == "literal" then
+		return value == pattern.value
+
+	elseif kind == "type" then
+		return typeof(value) == pattern.value
+
+	elseif kind == "bind" then
+		if matchPattern(pattern.pattern, value, bindings) then
+			bindings[pattern.name] = value
+			return true
+		end
+
+		return false
+	elseif kind == "shape" then
+		if typeof(value) ~= "table" then return false end
+		for k, sub in pattern.value do
+			if not matchPattern(sub, value[k], bindings) then
+				return false
+			end
+		end
+
+		return true
+	elseif kind == "array" then
+		if typeof(value) ~= "table" then return false end
+		for i, sub in pattern.value do
+			if not matchPattern(sub, value[i], bindings) then
+				return false
+			end
+		end
+
+		return true
+	elseif kind == "or" then
+		for _, p in pattern.patterns do
+			local temp = table.clone(bindings)
+			if matchPattern(p, value, temp) then
+				table.clear(bindings)
+				for k,v in temp do bindings[k]=v end
+				return true
+			end
+		end
+
+		return false
+	elseif kind == "and" then
+		for _, p in pattern.patterns do
+			if not matchPattern(p, value, bindings) then
+				return false
+			end
+		end
+
+		return true
+	end
+
+	return false
+end
+
+--// METHODS \\--
+
 function Match:case<K, R>(
-	key: K | ((value: any) -> boolean),
+	key: K | ((value: any) -> boolean) | Pattern,
 	fn: (...any) -> R,
 	priority: number?
 )
@@ -71,16 +146,21 @@ function Match:case<K, R>(
 		error("Match.case: handler must be a function")
 	end
 
-	if typeof(key) == "function" then
-		local pred = key :: (any) -> boolean
+	if typeof(key) == "table" and key.kind then
+		self._patterns = self._patterns or {}
 
-		local predCase: PredicateCase<any, R> = {
-			predicate = pred,
+		self._patterns[#self._patterns + 1] = {
+			pattern = key,
+			handler = fn,
+			priority = priority or (#self._patterns + 1),
+		}
+
+	elseif typeof(key) == "function" then
+		self._predicates[#self._predicates + 1] = {
+			predicate = key,
 			handler = fn,
 			priority = priority or (#self._predicates + 1),
 		}
-
-		self._predicates[#self._predicates + 1] = predCase
 
 		if self._config.predicateLimit and #self._predicates > self._config.predicateLimit then
 			warn(`Match: High predicate count ({#self._predicates})`)
@@ -118,12 +198,16 @@ function Match:batch(cases: {[any]: (...any) -> any})
 end
 
 function Match:compile()
-	if self._compiled then
-		return self
-	end
+	if self._compiled then return self end
 
 	if #self._predicates > 1 then
 		table.sort(self._predicates, function(a, b)
+			return a.priority < b.priority
+		end)
+	end
+
+	if self._patterns and #self._patterns > 1 then
+		table.sort(self._patterns, function(a, b)
 			return a.priority < b.priority
 		end)
 	end
@@ -136,18 +220,28 @@ function Match:run()
 	local literalFn = rawget(self._cases, self._value)
 	if literalFn then return literalFn end
 
-	local predicateCount = #self._predicates
+	if not self._compiled then
+		self:compile()
+	end
 
-	if predicateCount > 0 then
-		if not self._compiled then
-			self:compile()
-		end
+	local patterns = self._patterns
+	if patterns then
+		for i = 1, #patterns do
+			local entry = patterns[i]
+			local bindings = {}
 
-		for i = 1, predicateCount do
-			local p = self._predicates[i]
-			if p.predicate(self._value) then
-				return p.handler
+			if matchPattern(entry.pattern, self._value, bindings) then
+				return function(...)
+					return entry.handler(bindings, ...)
+				end
 			end
+		end
+	end
+
+	for i = 1, #self._predicates do
+		local p = self._predicates[i]
+		if p.predicate(self._value) then
+			return p.handler
 		end
 	end
 
@@ -159,24 +253,16 @@ function Match:execute<R>(...: any) : R?
 	if not fn then return nil end
 
 	local hasArgs = select("#", ...) > 0
-
 	local cache = self._cache
 	local cacheKey: string?
 
 	if cache then
 		cacheKey = hasArgs and getCacheKey(self._value, ...) or getCacheKey(self._value)
-
 		local cached = cache[cacheKey]
 		if cached ~= nil then return cached end
 	end
 
-	local result: R?
-
-	if hasArgs then
-		result = (fn :: (...any) -> R)(...)
-	else
-		result = (fn :: (...any) -> R)(self._value)
-	end
+	local result: R? = hasArgs and fn(...) or fn(self._value)
 
 	if cache and cacheKey then
 		cache[cacheKey] = result
@@ -212,6 +298,8 @@ function Match:clear()
 	return self
 end
 
+--// CONSTRUCTOR \\--
+
 local function createMatch<T>(value: T, config: MatchConfig?)
 	local finalConfig: MatchConfig = config or {}
 
@@ -223,6 +311,7 @@ local function createMatch<T>(value: T, config: MatchConfig?)
 		_value = value,
 		_cases = {},
 		_predicates = {},
+		_patterns = nil,
 		_default = nil,
 
 		_cache = enableCache and {} or nil,
@@ -241,33 +330,35 @@ local function createMatch<T>(value: T, config: MatchConfig?)
 	return setmetatable(self, Match)
 end
 
-local MatchModule = {
-	match = createMatch,
+--// MODULE \\--
 
-	cached = function<T>(value: T)
-		return createMatch(value, {
-			enableCache = true,
-			cacheSize = 128,
-		})
-	end,
+local MatchModule = {}
 
-	simple = function<T>(value: T)
-		return createMatch(value, {
-			enableCache = false,
-			predicateLimit = 10,
-		})
-	end,
-}
+local function main<T>(value: T, useCache: boolean?)
+	local enableCache = useCache == true
 
-setmetatable(MatchModule, {
-	__call = function(_, value: any, useCache: boolean?)
-		local enableCache = useCache == true
+	return createMatch(value, {
+		enableCache = enableCache,
+		cacheSize = enableCache and 64 or 0,
+	})
+end
 
-		return createMatch(value, {
-			enableCache = enableCache,
-			cacheSize = enableCache and 64 or 0,
-		})
-	end,
-})
+MatchModule.cached = function<T>(value: T)
+	return createMatch(value, {
+		enableCache = true,
+		cacheSize = 128,
+	})
+end
 
-return table.freeze(MatchModule) :: MatchModule
+MatchModule.simple = function<T>(value: T)
+	return createMatch(value, {
+		enableCache = false,
+		predicateLimit = 10,
+	})
+end
+
+MatchModule.match = main
+
+return table.freeze(setmetatable(MatchModule, {
+	__call = function(_, ...) return main(...) end,
+})) :: MatchModule
