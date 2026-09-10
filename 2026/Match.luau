@@ -1,6 +1,3 @@
---!optimize 2
---!native
-
 --// @O_Kolt \\--
 
 local Match = {}
