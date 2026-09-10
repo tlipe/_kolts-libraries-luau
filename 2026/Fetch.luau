@@ -1,6 +1,3 @@
---!native
---!optimize 2
-
 local HttpService = game:GetService('HttpService')
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD'
