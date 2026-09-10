@@ -1,5 +1,4 @@
 --!strict
---!native
 
 return function()
 	local db: boolean = false
