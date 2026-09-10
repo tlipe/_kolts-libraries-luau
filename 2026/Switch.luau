@@ -1,5 +1,4 @@
 --!strict
---!native
 
 --// @O_Kolt \\--
 
