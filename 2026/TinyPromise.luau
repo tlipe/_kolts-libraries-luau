@@ -1,6 +1,3 @@
---!optimize 2
---!native
-
 type Resolve<T> = (T) -> ()
 type Reject = (any) -> ()
 
