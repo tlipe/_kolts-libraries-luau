@@ -1,6 +1,4 @@
---!optimize 2
 --!strict
---!native
 
 return table.freeze {
 	declare = function(conexp: true | string) : ()
